@@ -11,6 +11,7 @@ import java.util.Set;
 
 import static org.springframework.http.HttpStatus.*;
 
+@CrossOrigin(origins = "http://localhost:4200")
 @RestController
 @RequestMapping("/api/v1/documents")
 public class DocumentController {
