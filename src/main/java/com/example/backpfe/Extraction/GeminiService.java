@@ -5,12 +5,13 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
-import java.util.Base64;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
+
+import static org.springframework.http.HttpStatus.BAD_GATEWAY;
 
 @Service
 public class GeminiService {
@@ -27,18 +28,16 @@ public class GeminiService {
     ) {
         this.apiKey = apiKey;
         this.model = model;
-        this.webClient = builder.baseUrl(baseUrl).build();    }
+        this.webClient = builder.baseUrl(baseUrl).build();
+    }
 
     public String extractRawText(MultipartFile file) throws IOException {
 
-        // 1) Convertir en base64
         String base64 = Base64.getEncoder().encodeToString(file.getBytes());
         String mimeType = Optional.ofNullable(file.getContentType()).orElse("application/octet-stream");
 
-        // 2) Prompt minimal stable
         String prompt = "Extract all text from this document. Return only the text.";
 
-        // 3) Payload Gemini (Generative Language API)
         Map<String, Object> body = Map.of(
                 "contents", List.of(
                         Map.of("parts", List.of(
@@ -51,19 +50,25 @@ public class GeminiService {
                 )
         );
 
-        // 4) Appel
-        Map resp = webClient.post()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/v1beta/models/{model}:generateContent")
-                        .queryParam("key", apiKey)
-                        .build(model))
-                .contentType(MediaType.APPLICATION_JSON)
-                .bodyValue(body)
-                .retrieve()
-                .bodyToMono(Map.class)
-                .block();
+        Map resp;
+        try {
+            resp = webClient.post()
+                    .uri(uriBuilder -> uriBuilder
+                            .path("/v1beta/models/{model}:generateContent")
+                            .queryParam("key", apiKey)
+                            .build(model))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToMono(Map.class)
+                    .block();
+        } catch (WebClientResponseException e) {
+            throw new ResponseStatusException(BAD_GATEWAY,
+                    "GEMINI_CALL_FAILED " + e.getStatusCode().value() + " " + e.getResponseBodyAsString());
+        } catch (Exception e) {
+            throw new ResponseStatusException(BAD_GATEWAY, "GEMINI_UNAVAILABLE " + e.getMessage());
+        }
 
-        // 5) Extraction texte (simple)
         return extractText(resp);
     }
 
@@ -76,8 +81,7 @@ public class GeminiService {
             Map p0 = (Map) parts.get(0);
             return String.valueOf(p0.get("text"));
         } catch (Exception e) {
-            return "ERROR_PARSING_RESPONSE: " + resp;
+            throw new ResponseStatusException(BAD_GATEWAY, "GEMINI_BAD_RESPONSE " + resp);
         }
     }
 }
-
