@@ -24,41 +24,12 @@ public class DocumentController {
 
     private final GeminiService geminiService;
     private final DocumentExtractionRepository repo;
+    private final DocumentFieldRepository fieldRepo;
 
-    public DocumentController(GeminiService geminiService, DocumentExtractionRepository repo) {
+    public DocumentController(GeminiService geminiService, DocumentExtractionRepository repo, DocumentFieldRepository fieldRepo) {
         this.geminiService = geminiService;
         this.repo = repo;
-    }
-
-    @PostMapping(value = "/extract", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ExtractionResponse extract(@RequestPart("file") MultipartFile file) throws IOException {
-
-        if (file == null || file.isEmpty()) {
-            throw new ResponseStatusException(BAD_REQUEST, "FILE_EMPTY");
-        }
-
-        String ct = file.getContentType();
-        if (ct == null || !ALLOWED.contains(ct)) {
-            throw new ResponseStatusException(BAD_REQUEST, "UNSUPPORTED_TYPE: " + ct);
-        }
-
-        String rawText = geminiService.extractRawText(file);
-
-        DocumentExtraction saved = repo.save(new DocumentExtraction(
-                file.getOriginalFilename(),
-                ct,
-                file.getSize(),
-                rawText
-        ));
-
-        return new ExtractionResponse(
-                saved.getId(),
-                saved.getFileName(),
-                saved.getContentType(),
-                saved.getSize(),
-                saved.getCreatedAt(),
-                saved.getRawText()
-        );
+        this.fieldRepo = fieldRepo;
     }
 
     // GET /api/v1/documents  -> historique (sans rawText)
@@ -85,4 +56,42 @@ public class DocumentController {
                 d.getRawText()
         );
     }
+
+    @PostMapping(value = "/extract-structured", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public StructuredApiResponse extractStructured(@RequestPart("file") MultipartFile file) throws IOException {
+
+        if (file == null || file.isEmpty()) throw new ResponseStatusException(BAD_REQUEST, "FILE_EMPTY");
+
+        String ct = file.getContentType();
+        if (ct == null || !ALLOWED.contains(ct)) throw new ResponseStatusException(BAD_REQUEST, "UNSUPPORTED_TYPE: " + ct);
+
+        StructuredResult sr = geminiService.extractStructured(file);
+
+        // sauvegarder document
+        String structuredJson = new com.fasterxml.jackson.databind.ObjectMapper()
+                .writeValueAsString(sr.fields());
+        DocumentExtraction saved = repo.save(new DocumentExtraction(
+                file.getOriginalFilename(),
+                ct,
+                file.getSize(),
+                sr.rawText(),
+                sr.docType(),
+                structuredJson
+        ));
+
+        // ===== CORRECTION ICI: SAUVEGARDER LES VRAIES VALEURS =====
+        // L'ancien code faisait: String.valueOf(v) qui créait des OID
+        // Le nouveau code prend directement la valeur String de la Map
+        sr.fields().forEach((k, v) -> {
+            // v est déjà une String (vient de Map<String, String>)
+            // Pas besoin de String.valueOf() qui crée des OID!
+            String fieldValue = (v != null) ? v : "";
+
+            fieldRepo.save(new DocumentField(saved, k, fieldValue));
+        });
+        // ==========================================================
+
+        return new StructuredApiResponse(saved.getId(), saved.getDocType(), sr.fields());
+    }
+
 }
